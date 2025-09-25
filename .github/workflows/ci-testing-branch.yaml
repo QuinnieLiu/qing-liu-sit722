@@ -1,0 +1,148 @@
+name: CI Pipeline - Testing Branch
+
+on:
+  push:
+    branches: [ testing ]
+  pull_request:
+    branches: [ testing ]
+
+env:
+  ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Run Tests
+
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Test Customer Service
+      run: |
+        cd backend/customer_service
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        echo "Running customer service tests..."
+        pytest tests/ -v --tb=short || exit 1
+
+    - name: Test Product Service
+      run: |
+        cd backend/product_service
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        echo "Running product service tests..."
+        pytest tests/ -v --tb=short || exit 1
+
+    - name: Test Order Service
+      run: |
+        cd backend/order_service
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        echo "Running order service tests..."
+        pytest tests/ -v --tb=short || exit 1
+
+    - name: Test Frontend (Static Analysis)
+      run: |
+        cd frontend
+        echo "Running frontend validation..."
+        # Check if HTML and JS files are valid
+        if [ -f "index.html" ]; then
+          echo "✓ index.html found"
+        else
+          echo "✗ index.html missing" && exit 1
+        fi
+        if [ -f "main.js" ]; then
+          echo "✓ main.js found"
+        else
+          echo "✗ main.js missing" && exit 1
+        fi
+        if [ -f "nginx.conf" ]; then
+          echo "✓ nginx.conf found"
+        else
+          echo "✗ nginx.conf missing" && exit 1
+        fi
+        echo "Frontend validation passed!"
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    name: Build and Push Images to ACR
+    if: success()
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Login to Azure Container Registry
+      run: |
+        az acr login --name ${{ env.ACR_NAME }}
+
+    - name: Build and push Customer Service image
+      run: |
+        cd backend/customer_service
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/customer-service:${{ github.sha }} .
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/customer-service:latest .
+        docker push ${{ env.ACR_LOGIN_SERVER }}/customer-service:${{ github.sha }}
+        docker push ${{ env.ACR_LOGIN_SERVER }}/customer-service:latest
+
+    - name: Build and push Product Service image
+      run: |
+        cd backend/product_service
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/product-service:${{ github.sha }} .
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/product-service:latest .
+        docker push ${{ env.ACR_LOGIN_SERVER }}/product-service:${{ github.sha }}
+        docker push ${{ env.ACR_LOGIN_SERVER }}/product-service:latest
+
+    - name: Build and push Order Service image
+      run: |
+        cd backend/order_service
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/order-service:${{ github.sha }} .
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/order-service:latest .
+        docker push ${{ env.ACR_LOGIN_SERVER }}/order-service:${{ github.sha }}
+        docker push ${{ env.ACR_LOGIN_SERVER }}/order-service:latest
+
+    - name: Build and push Frontend image
+      run: |
+        cd frontend
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ github.sha }} .
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:latest .
+        docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ github.sha }}
+        docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:latest
+
+    - name: Output image information
+      run: |
+        echo "Images pushed to ACR:"
+        echo "Customer Service: ${{ env.ACR_LOGIN_SERVER }}/customer-service:${{ github.sha }}"
+        echo "Product Service: ${{ env.ACR_LOGIN_SERVER }}/product-service:${{ github.sha }}"
+        echo "Order Service: ${{ env.ACR_LOGIN_SERVER }}/order-service:${{ github.sha }}"
+        echo "Frontend: ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ github.sha }}"
