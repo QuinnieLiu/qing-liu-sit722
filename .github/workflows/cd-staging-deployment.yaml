@@ -80,10 +80,10 @@ jobs:
 
     - name: Wait for application deployments
       run: |
-        kubectl wait --for=condition=available deployment/customer-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
-        kubectl wait --for=condition=available deployment/product-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
-        kubectl wait --for=condition=available deployment/order-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
-        kubectl wait --for=condition=available deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+        kubectl wait --for=condition=available deployment/customer-service -n ${{ env.STAGING_NAMESPACE }} --timeout=3000s
+        kubectl wait --for=condition=available deployment/product-service -n ${{ env.STAGING_NAMESPACE }} --timeout=3000s
+        kubectl wait --for=condition=available deployment/order-service -n ${{ env.STAGING_NAMESPACE }} --timeout=3000s
+        kubectl wait --for=condition=available deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=30000s
 
     - name: Get staging environment info
       run: |
