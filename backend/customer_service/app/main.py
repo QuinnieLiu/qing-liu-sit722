@@ -35,7 +35,7 @@ logger.info(
 app = FastAPI(
     title="Customer Service API",
     description="Manages orders for mini-ecommerce app, with synchronous stock deduction.",
-    version="1.0.0",
+    version="1.0.1",
 )
 
 # CORS
