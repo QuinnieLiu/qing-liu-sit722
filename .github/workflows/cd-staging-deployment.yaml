@@ -1,0 +1,165 @@
+name: CD Pipeline - Staging Deployment
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline - Testing Branch"]
+    types:
+      - completed
+    branches: [testing]
+
+env:
+  ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
+  RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+  AKS_NAME: ${{ secrets.AZURE_AKS_NAME }}
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    name: Deploy to Staging Environment
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set staging environment name
+      run: |
+        echo "STAGING_NAMESPACE=staging-$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_ENV
+        echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }}
+
+    - name: Create staging namespace
+      run: |
+        kubectl create namespace ${{ env.STAGING_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        kubectl label namespace ${{ env.STAGING_NAMESPACE }} environment=staging
+        kubectl label namespace ${{ env.STAGING_NAMESPACE }} commit=${{ github.sha }}
+
+    - name: Deploy PostgreSQL to staging
+      run: |
+        envsubst < k8s/staging/postgresql.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+    - name: Deploy RabbitMQ to staging
+      run: |
+        envsubst < k8s/staging/rabbitmq.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+    - name: Wait for dependencies to be ready
+      run: |
+        kubectl wait --for=condition=ready pod -l app=postgresql -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=rabbitmq -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+
+    - name: Deploy staging configuration
+      run: |
+        envsubst < k8s/staging/configmap.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+    - name: Deploy Customer Service to staging
+      run: |
+        envsubst < k8s/staging/customer-service.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+    - name: Deploy Product Service to staging
+      run: |
+        envsubst < k8s/staging/product-service.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+    - name: Deploy Order Service to staging
+      run: |
+        envsubst < k8s/staging/order-service.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+    - name: Deploy Frontend to staging
+      run: |
+        envsubst < k8s/staging/frontend.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+# LoadBalancer services are already defined in individual service yaml files
+
+    - name: Wait for application deployments
+      run: |
+        kubectl wait --for=condition=available deployment/customer-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+        kubectl wait --for=condition=available deployment/product-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+        kubectl wait --for=condition=available deployment/order-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+        kubectl wait --for=condition=available deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+
+    - name: Get staging environment info
+      run: |
+        echo "=== Staging Environment Info ==="
+        echo "Namespace: ${{ env.STAGING_NAMESPACE }}"
+        echo "Image Tag: ${{ env.IMAGE_TAG }}"
+        echo ""
+        echo "=== Services ==="
+        kubectl get services -n ${{ env.STAGING_NAMESPACE }}
+        echo ""
+        echo "=== External Access ==="
+        echo "Getting LoadBalancer IPs (may take a few minutes to assign)..."
+        FRONTEND_IP=$(kubectl get svc frontend -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+        CUSTOMER_IP=$(kubectl get svc customer-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+        PRODUCT_IP=$(kubectl get svc product-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+        ORDER_IP=$(kubectl get svc order-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+
+        echo "Frontend:        http://$FRONTEND_IP"
+        echo "Customer API:    http://$CUSTOMER_IP:8000"
+        echo "Product API:     http://$PRODUCT_IP:8001"
+        echo "Order API:       http://$ORDER_IP:8002"
+        echo ""
+        echo "=== Pod Status ==="
+        kubectl get pods -n ${{ env.STAGING_NAMESPACE }}
+
+    - name: Run acceptance tests
+      run: |
+        echo "Running acceptance tests on staging environment..."
+
+        # Get service IPs for testing
+        CUSTOMER_SERVICE_IP=$(kubectl get svc customer-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+        PRODUCT_SERVICE_IP=$(kubectl get svc product-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+        ORDER_SERVICE_IP=$(kubectl get svc order-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+        FRONTEND_SERVICE_IP=$(kubectl get svc frontend -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+
+        # Test Customer Service
+        kubectl run test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.STAGING_NAMESPACE }} -- \
+          curl -f http://$CUSTOMER_SERVICE_IP:8000/health || exit 1
+
+        # Test Product Service
+        kubectl run test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.STAGING_NAMESPACE }} -- \
+          curl -f http://$PRODUCT_SERVICE_IP:8001/health || exit 1
+
+        # Test Order Service
+        kubectl run test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.STAGING_NAMESPACE }} -- \
+          curl -f http://$ORDER_SERVICE_IP:8002/health || exit 1
+
+        # Test Frontend
+        kubectl run test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.STAGING_NAMESPACE }} -- \
+          curl -f http://$FRONTEND_SERVICE_IP:80/ || exit 1
+
+        echo "✅ All acceptance tests passed!"
+
+    - name: Manual testing window
+      run: |
+        echo "🔄 Staging environment is ready for manual testing!"
+        echo "Namespace: ${{ env.STAGING_NAMESPACE }}"
+        echo "You have 30 minutes to perform manual testing."
+        echo "The environment will be automatically cleaned up after this time."
+
+        # Wait for 30 minutes (1800 seconds) for manual testing
+        sleep 1800
+
+    - name: Cleanup staging environment
+      if: always()
+      run: |
+        echo "🧹 Cleaning up staging environment: ${{ env.STAGING_NAMESPACE }}"
+        kubectl delete namespace ${{ env.STAGING_NAMESPACE }} --ignore-not-found=true
+        echo "✅ Staging environment cleaned up successfully"
+
+    - name: Deployment summary
+      if: always()
+      run: |
+        echo "=== Staging Deployment Summary ==="
+        echo "✅ Staging Environment: ${{ env.STAGING_NAMESPACE }}"
+        echo "✅ Image Tag: ${{ env.IMAGE_TAG }}"
+        echo "✅ Acceptance Tests: Completed"
+        echo "✅ Manual Testing: 30 minutes provided"
+        echo "✅ Cleanup: Environment destroyed"

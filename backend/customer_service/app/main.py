@@ -26,9 +26,9 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
 
-PRODUCT_SERVICE_URL = os.getenv("PRODUCT_SERVICE_URL", "http://localhost:8000")
+PRODUCT_SERVICE_URL = os.getenv("PRODUCT_SERVICE_URL", "http://localhost:8001")
 logger.info(
-    f"Order Service: Configured to communicate with Product Service at: {PRODUCT_SERVICE_URL}"
+    f"Customer Service: Configured to communicate with Product Service at: {PRODUCT_SERVICE_URL}"
 )
 
 # --- FastAPI Application Setup ---
