@@ -14,6 +14,7 @@ spec:
       labels:
         app: product-service
     spec:
+      enableServiceLinks: false  # Disable auto-generated service env vars
       containers:
       - name: product-service
         image: ${ACR_LOGIN_SERVER}/product-service:${IMAGE_TAG}
