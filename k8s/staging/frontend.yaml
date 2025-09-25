@@ -19,6 +19,13 @@ spec:
         image: ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG}
         ports:
         - containerPort: 80
+        env:
+        - name: PRODUCT_API_BASE_URL
+          value: "${PRODUCT_API_BASE_URL}"
+        - name: ORDER_API_BASE_URL
+          value: "${ORDER_API_BASE_URL}"
+        - name: CUSTOMER_API_BASE_URL
+          value: "${CUSTOMER_API_BASE_URL}"
         livenessProbe:
           httpGet:
             path: /

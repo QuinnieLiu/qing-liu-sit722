@@ -14,10 +14,14 @@ env:
   AKS_NAME: ${{ secrets.AZURE_AKS_NAME }}
 
 jobs:
-  deploy-staging:
+  deploy-backend:
     runs-on: ubuntu-latest
-    name: Deploy to Staging Environment
+    name: Deploy Backend Services to Staging
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      customer-api-url: ${{ steps.get-ips.outputs.customer-api-url }}
+      product-api-url: ${{ steps.get-ips.outputs.product-api-url }}
+      order-api-url: ${{ steps.get-ips.outputs.order-api-url }}
 
     steps:
     - name: Checkout code
@@ -72,17 +76,63 @@ jobs:
       run: |
         envsubst < k8s/staging/order-service.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
 
-    - name: Deploy Frontend to staging
+    - name: Get backend service IPs
+      id: get-ips
       run: |
-        envsubst < k8s/staging/frontend.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+        echo "Waiting for LoadBalancer IPs..."
+        for i in {1..15}; do
+          CUSTOMER_IP=$(kubectl get svc customer-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          PRODUCT_IP=$(kubectl get svc product-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          ORDER_IP=$(kubectl get svc order-service -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
 
-# LoadBalancer services are already defined in individual service yaml files
+          if [[ -n "$CUSTOMER_IP" && -n "$PRODUCT_IP" && -n "$ORDER_IP" ]]; then
+            echo "customer-api-url=http://$CUSTOMER_IP:8000" >> $GITHUB_OUTPUT
+            echo "product-api-url=http://$PRODUCT_IP:8001" >> $GITHUB_OUTPUT
+            echo "order-api-url=http://$ORDER_IP:8002" >> $GITHUB_OUTPUT
+            break
+          fi
+          sleep 30
+        done
 
-    - name: Wait for application deployments
+    - name: Wait for backend deployments
       run: |
         kubectl wait --for=condition=available deployment/customer-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
         kubectl wait --for=condition=available deployment/product-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
         kubectl wait --for=condition=available deployment/order-service -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
+
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    name: Deploy Frontend to Staging
+    needs: deploy-backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set staging environment name
+      run: |
+        echo "STAGING_NAMESPACE=staging-$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_ENV
+        echo "IMAGE_TAG=latest" >> $GITHUB_ENV
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }}
+
+    - name: Deploy Frontend
+      env:
+        CUSTOMER_API_BASE_URL: ${{ needs.deploy-backend.outputs.customer-api-url }}
+        PRODUCT_API_BASE_URL: ${{ needs.deploy-backend.outputs.product-api-url }}
+        ORDER_API_BASE_URL: ${{ needs.deploy-backend.outputs.order-api-url }}
+      run: |
+        envsubst < k8s/staging/frontend.yaml | kubectl apply -n ${{ env.STAGING_NAMESPACE }} -f -
+
+    - name: Wait for frontend deployment
+      run: |
         kubectl wait --for=condition=available deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=300s
 
     - name: Get staging environment info
