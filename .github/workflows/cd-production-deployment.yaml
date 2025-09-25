@@ -1,0 +1,190 @@
+name: CD Pipeline - Production Deployment
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+env:
+  ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
+  RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+  AKS_NAME: ${{ secrets.AZURE_AKS_NAME }}
+  PRODUCTION_NAMESPACE: production
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    name: Deploy to Production Environment
+    if: github.event.pull_request.merged == true
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set production image tag
+      run: |
+        echo "IMAGE_TAG=latest" >> $GITHUB_ENV
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }}
+
+    - name: Ensure production namespace exists
+      run: |
+        if ! kubectl get namespace ${{ env.PRODUCTION_NAMESPACE }} > /dev/null 2>&1; then
+          echo "Creating production namespace..."
+          kubectl create namespace ${{ env.PRODUCTION_NAMESPACE }}
+          kubectl label namespace ${{ env.PRODUCTION_NAMESPACE }} environment=production
+        fi
+
+    - name: Pre-deployment health check
+      run: |
+        echo "Checking current production status..."
+        kubectl get deployments -n ${{ env.PRODUCTION_NAMESPACE }} || echo "No existing deployments"
+        kubectl get services -n ${{ env.PRODUCTION_NAMESPACE }} || echo "No existing services"
+
+    - name: Deploy PostgreSQL to production
+      run: |
+        envsubst < k8s/production/postgresql.yaml | kubectl apply -n ${{ env.PRODUCTION_NAMESPACE }} -f -
+
+    - name: Deploy RabbitMQ to production
+      run: |
+        envsubst < k8s/production/rabbitmq.yaml | kubectl apply -n ${{ env.PRODUCTION_NAMESPACE }} -f -
+
+    - name: Wait for dependencies to be ready
+      run: |
+        kubectl wait --for=condition=ready pod -l app=postgresql -n ${{ env.PRODUCTION_NAMESPACE }} --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=rabbitmq -n ${{ env.PRODUCTION_NAMESPACE }} --timeout=300s
+
+    - name: Deploy production configuration
+      run: |
+        envsubst < k8s/production/configmap.yaml | kubectl apply -n ${{ env.PRODUCTION_NAMESPACE }} -f -
+
+    - name: Deploy Customer Service to production
+      run: |
+        envsubst < k8s/production/customer-service.yaml | kubectl apply -n ${{ env.PRODUCTION_NAMESPACE }} -f -
+
+    - name: Deploy Product Service to production
+      run: |
+        envsubst < k8s/production/product-service.yaml | kubectl apply -n ${{ env.PRODUCTION_NAMESPACE }} -f -
+
+    - name: Deploy Order Service to production
+      run: |
+        envsubst < k8s/production/order-service.yaml | kubectl apply -n ${{ env.PRODUCTION_NAMESPACE }} -f -
+
+    - name: Deploy Frontend to production
+      run: |
+        envsubst < k8s/production/frontend.yaml | kubectl apply -n ${{ env.PRODUCTION_NAMESPACE }} -f -
+
+# LoadBalancer services are already defined in individual service yaml files
+
+    - name: Wait for production deployments
+      run: |
+        echo "Waiting for deployments to be ready..."
+        kubectl wait --for=condition=available deployment/customer-service -n ${{ env.PRODUCTION_NAMESPACE }} --timeout=600s
+        kubectl wait --for=condition=available deployment/product-service -n ${{ env.PRODUCTION_NAMESPACE }} --timeout=600s
+        kubectl wait --for=condition=available deployment/order-service -n ${{ env.PRODUCTION_NAMESPACE }} --timeout=600s
+        kubectl wait --for=condition=available deployment/frontend -n ${{ env.PRODUCTION_NAMESPACE }} --timeout=600s
+
+    - name: Post-deployment validation
+      run: |
+        echo "Running production deployment validation..."
+
+        # Get service IPs for testing
+        CUSTOMER_SERVICE_IP=$(kubectl get svc customer-service -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+        PRODUCT_SERVICE_IP=$(kubectl get svc product-service -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+        ORDER_SERVICE_IP=$(kubectl get svc order-service -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+        FRONTEND_SERVICE_IP=$(kubectl get svc frontend -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+
+        # Validate all services are responding
+        kubectl run prod-test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.PRODUCTION_NAMESPACE }} -- \
+          curl -f http://$CUSTOMER_SERVICE_IP:8000/health || exit 1
+
+        kubectl run prod-test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.PRODUCTION_NAMESPACE }} -- \
+          curl -f http://$PRODUCT_SERVICE_IP:8001/health || exit 1
+
+        kubectl run prod-test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.PRODUCTION_NAMESPACE }} -- \
+          curl -f http://$ORDER_SERVICE_IP:8002/health || exit 1
+
+        kubectl run prod-test-pod --rm -i --restart=Never --image=curlimages/curl:latest -n ${{ env.PRODUCTION_NAMESPACE }} -- \
+          curl -f http://$FRONTEND_SERVICE_IP:80/ || exit 1
+
+        echo "✅ All production services are healthy!"
+
+    - name: Get production environment info
+      run: |
+        echo "=== Production Environment Status ==="
+        echo "Namespace: ${{ env.PRODUCTION_NAMESPACE }}"
+        echo "Image Tag: ${{ env.IMAGE_TAG }}"
+        echo ""
+        echo "=== Services ==="
+        kubectl get services -n ${{ env.PRODUCTION_NAMESPACE }}
+        echo ""
+        echo "=== Deployments ==="
+        kubectl get deployments -n ${{ env.PRODUCTION_NAMESPACE }}
+        echo ""
+        echo "=== Pods ==="
+        kubectl get pods -n ${{ env.PRODUCTION_NAMESPACE }}
+        echo ""
+        echo "=== External Access ==="
+        echo "Getting LoadBalancer IPs (may take a few minutes to assign)..."
+        FRONTEND_IP=$(kubectl get svc frontend -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+        CUSTOMER_IP=$(kubectl get svc customer-service -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+        PRODUCT_IP=$(kubectl get svc product-service -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+        ORDER_IP=$(kubectl get svc order-service -n ${{ env.PRODUCTION_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending...")
+
+        echo "Frontend:        http://$FRONTEND_IP"
+        echo "Customer API:    http://$CUSTOMER_IP:8000"
+        echo "Product API:     http://$PRODUCT_IP:8001"
+        echo "Order API:       http://$ORDER_IP:8002"
+
+    - name: Deployment summary
+      run: |
+        echo "=== Production Deployment Summary ==="
+        echo "✅ Environment: Production"
+        echo "✅ Namespace: ${{ env.PRODUCTION_NAMESPACE }}"
+        echo "✅ Image Tag: ${{ env.IMAGE_TAG }}"
+        echo "✅ Services Deployed: Customer, Product, Order, Frontend"
+        echo "✅ Health Checks: All services responding"
+        echo "✅ Deployment Status: SUCCESS"
+
+  rollback-on-failure:
+    runs-on: ubuntu-latest
+    name: Rollback on Deployment Failure
+    needs: deploy-production
+    if: failure()
+
+    steps:
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }}
+
+    - name: Rollback production deployment
+      run: |
+        echo "🔄 Rolling back production deployment..."
+
+        # Rollback each deployment to previous version
+        kubectl rollout undo deployment/customer-service -n ${{ env.PRODUCTION_NAMESPACE }} || echo "Customer service rollback skipped"
+        kubectl rollout undo deployment/product-service -n ${{ env.PRODUCTION_NAMESPACE }} || echo "Product service rollback skipped"
+        kubectl rollout undo deployment/order-service -n ${{ env.PRODUCTION_NAMESPACE }} || echo "Order service rollback skipped"
+        kubectl rollout undo deployment/frontend -n ${{ env.PRODUCTION_NAMESPACE }} || echo "Frontend rollback skipped"
+
+        echo "⚠️ Production deployment rolled back due to failure"
+
+    - name: Notify rollback completion
+      run: |
+        echo "=== Rollback Summary ==="
+        echo "⚠️ Production deployment failed and has been rolled back"
+        echo "🔄 All services reverted to previous stable version"
+        echo "📋 Please check logs and fix issues before next deployment"

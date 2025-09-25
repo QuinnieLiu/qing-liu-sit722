@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # Database configuration - Production PostgreSQL pod
+  POSTGRES_USER: "produser"
+  POSTGRES_PASSWORD: "prodpass"
+  POSTGRES_DB: "productiondb"
+  POSTGRES_HOST: "postgresql"  # Production PostgreSQL pod
+  POSTGRES_PORT: "5432"
+
+  # RabbitMQ configuration - Production RabbitMQ pod
+  RABBITMQ_HOST: "rabbitmq"   # Production RabbitMQ pod
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_USER: "produser"
+  RABBITMQ_PASS: "prodpass"
+
+  # Service URLs for inter-service communication
+  CUSTOMER_SERVICE_URL: "http://customer-service:8000"
+  PRODUCT_SERVICE_URL: "http://product-service:8001"
+  ORDER_SERVICE_URL: "http://order-service:8002"
+
+  # Environment
+  ENVIRONMENT: "production"
