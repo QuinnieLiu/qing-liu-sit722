@@ -14,6 +14,7 @@ spec:
       labels:
         app: product-service
     spec:
+      enableServiceLinks: false  # Disable auto-generated service env vars
       containers:
       - name: product-service
         image: ${ACR_LOGIN_SERVER}/product-service:${IMAGE_TAG}
@@ -45,6 +46,26 @@ spec:
             configMapKeyRef:
               name: app-config
               key: POSTGRES_PORT
+        - name: RABBITMQ_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: RABBITMQ_HOST
+        - name: RABBITMQ_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: RABBITMQ_PORT
+        - name: RABBITMQ_USER
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: RABBITMQ_USER
+        - name: RABBITMQ_PASS
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: RABBITMQ_PASS
         livenessProbe:
           httpGet:
             path: /health
