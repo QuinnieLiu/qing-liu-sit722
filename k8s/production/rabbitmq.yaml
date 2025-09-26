@@ -39,23 +39,6 @@ spec:
         volumeMounts:
         - name: rabbitmq-storage
           mountPath: /var/lib/rabbitmq
-        livenessProbe:
-          exec:
-            command:
-            - rabbitmq-diagnostics
-            - -q
-            - ping
-          initialDelaySeconds: 60
-          periodSeconds: 30
-        readinessProbe:
-          exec:
-            command:
-            - rabbitmq-diagnostics
-            - -q
-            - check_port_connectivity
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
       volumes:
       - name: rabbitmq-storage
         persistentVolumeClaim:
