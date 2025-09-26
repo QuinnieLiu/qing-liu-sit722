@@ -108,7 +108,7 @@ rabbitmq_exchange: Optional[aio_pika.Exchange] = None
 app = FastAPI(
     title="Product Service API",
     description="Manages products and stock for mini-ecommerce app, with Azure Storage integration.",
-    version="1.0.3",
+    version="1.0.4",
 )
 
 # Enable CORS (for frontend dev/testing)
