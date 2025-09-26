@@ -53,8 +53,9 @@ spec:
             - rabbitmq-diagnostics
             - -q
             - check_port_connectivity
-          initialDelaySeconds: 20
+          initialDelaySeconds: 30
           periodSeconds: 10
+          timeoutSeconds: 5
       volumes:
       - name: rabbitmq-storage
         persistentVolumeClaim:
